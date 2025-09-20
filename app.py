@@ -30,3 +30,4 @@ if st.button("Check"):
     else:
         st.warning("⚠️ Please enter some text to analyze.")
 
+'''This is it, This is where the magic happens '''
