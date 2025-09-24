@@ -8,3 +8,9 @@ To tackle this, we decided to *expand the horizon* of our dataset. Today we pick
 The merged dataset now has **~50k true articles and ~50k fake articles** (~110k total), giving us a much broader and balanced foundation for training.  
 
 22/09/2025 -- Trained model based on Naive Bayes and SVM classifier, using the new integrated merged dataset. There integration with the UI is still left.
+NaiveBayes_V2's accuracy, f1 score, presicion, etc:--
+![WhatsApp Image 2025-09-21 at 18 09 09_0324e1b9](https://github.com/user-attachments/assets/1cae82cc-5be6-4299-8e7a-a0616c49ed2c)
+SVM's accuracy, f1 score, presicion, etc:--
+![WhatsApp Image 2025-09-21 at 18 12 43_f0487682](https://github.com/user-attachments/assets/4741d8ab-6820-4be0-ab52-05c32ec34c53)
+
+
