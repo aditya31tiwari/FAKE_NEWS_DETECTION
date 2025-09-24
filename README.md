@@ -7,4 +7,4 @@ After some research, I realized this might be due to the dataset we were using (
 To tackle this, we decided to *expand the horizon* of our dataset. Today we picked **two more datasets** along with ISOT, cleaned and preprocessed them, and created one large **final_merged_dataset**.  
 The merged dataset now has **~50k true articles and ~50k fake articles** (~110k total), giving us a much broader and balanced foundation for training.  
 
-
+22/09/2025 -- Trained model based on Naive Bayes and SVM classifier, using the new integrated merged dataset. There integration with the UI is still left.
