@@ -23,6 +23,8 @@ The merged dataset now has **~50k true articles and ~50k fake articles** (~110k 
 ![WhatsApp Image 2025-09-21 at 18 12 43_f0487682](https://github.com/user-attachments/assets/4741d8ab-6820-4be0-ab52-05c32ec34c53)
 
 
+
 **DATE: 03-11-2025**
+
 We worked on the final_mergerd_dataset.csv file which was used in the Phase1 of the project.
 We were trying to make it BERT ready which is the big part of our next phase, i.e. Phase2, now, this phase will focus on showing that transformer based model will outperform baseline models on the same dataset. We are using BERT embeddings with XGBoost to do so.
