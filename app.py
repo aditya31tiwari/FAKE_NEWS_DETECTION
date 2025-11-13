@@ -1,31 +1,26 @@
 # app.py
 """
-Streamlit app for BERT+XGBoost hybrid (lightweight wrapper + runtime BERT).
-Expect a small wrapper file (or XGBoost + metadata dict) named:
- - bert_xgb_wrapper.pkl (preferred)
-or
- - bert_xgb_wrapper_light.pkl (alternate)
-Optional label encoder: label_encoder.joblib
-
-The app will lazy-load the SentenceTransformer at first prediction.
+Streamlit app for BERT + XGBoost hybrid.
+Default transformer: 'all-MiniLM-L6-v2' (as you specified).
+Expects 'bert_xgb_wrapper.pkl' (dict with keys like 'model'/'clf' and optional 'bert_name'/'transformer_name'/'label_encoder').
 """
+
 import os
 import joblib
 import numpy as np
 import streamlit as st
-from typing import Optional
+from typing import Any
 
-# ---------------- Config ----------------
-WRAPPER_FILES = ["bert_xgb_wrapper.pkl", "bert_xgb_wrapper_light.pkl", "bert_xgb_model.pkl"]
-LABEL_ENCODER = "label_encoder.joblib"
-# default HF model name you used when training; change if you used a different one
-DEFAULT_BERT_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+# ---------- Configuration ----------
+WRAPPER_FILENAME = "bert_xgb_wrapper.pkl"
+DEFAULT_BERT_NAME = "all-MiniLM-L6-v2"  # <- your transformer name
 
 st.set_page_config(page_title="DetectoNews — BERT+XGBoost", page_icon="🧠", layout="centered")
 
-# ---------------- Utilities ----------------
+
+# ---------- Helpers ----------
 @st.cache_resource
-def load_joblib(path: str):
+def load_wrapper(path: str) -> Any:
     if not os.path.exists(path):
         return None
     try:
@@ -34,232 +29,145 @@ def load_joblib(path: str):
         return {"__load_error__": str(e)}
 
 @st.cache_resource
-def get_sentence_transformer(name: str):
-    # Heavy object cached by Streamlit
+def get_transformer(model_name: str):
+    # cached SentenceTransformer loader
     from sentence_transformers import SentenceTransformer
-    return SentenceTransformer(name)
+    return SentenceTransformer(model_name)
 
-def make_light_wrapper_from_dict(d: dict, bert_name_fallback: str = DEFAULT_BERT_NAME):
-    """
-    Convert a dict (saved in .pkl) into a small wrapper object with .predict and .predict_proba.
-    Acceptable keys (various naming):
-      - 'model' or 'clf' -> classifier (XGBoost)
-      - 'bert_name' -> HF model name (preferred)
-      - 'bert' -> a loaded SentenceTransformer object (we will ignore embedded model and load runtime one)
-      - 'label_encoder' or 'le' -> label encoder object (optional)
-    """
+def extract_from_wrapper(obj: Any):
     clf = None
     le = None
-    bert_name = bert_name_fallback
+    bert_name = None
 
-    if "model" in d:
-        clf = d["model"]
-    elif "clf" in d:
-        clf = d["clf"]
-    elif "xgb" in d:
-        clf = d["xgb"]
-    elif "classifier" in d:
-        clf = d["classifier"]
+    if hasattr(obj, "predict") and hasattr(obj, "predict_proba"):
+        return obj, getattr(obj, "le", None), getattr(obj, "bert_name", DEFAULT_BERT_NAME)
 
-    if "label_encoder" in d:
-        le = d["label_encoder"]
-    elif "le" in d:
-        le = d["le"]
+    if isinstance(obj, dict):
+        for k in ("model", "clf", "xgb", "classifier"):
+            if k in obj:
+                clf = obj[k]; break
+        for k in ("label_encoder", "le"):
+            if k in obj:
+                le = obj[k]; break
+        for k in ("bert_name", "transformer_name", "hf_model_name"):
+            if k in obj:
+                bert_name = obj[k]; break
+        if clf is None:
+            for v in obj.values():
+                if hasattr(v, "predict") and hasattr(v, "predict_proba"):
+                    clf = v; break
 
-    if "bert_name" in d:
-        bert_name = d["bert_name"]
-    elif "transformer_name" in d:
-        bert_name = d["transformer_name"]
+    if clf is None:
+        return None, None, None
+    if bert_name is None:
+        bert_name = DEFAULT_BERT_NAME
+    return clf, le, bert_name
 
-    # if the dict accidentally contains 'bert' (a heavy object), ignore it; we'll load at runtime
-    return LightweightHybridWrapper(clf, label_encoder=le, bert_name=bert_name)
+def safe_proba_from_clf(clf, embeddings):
+    try:
+        p = clf.predict_proba(embeddings)
+        p = np.asarray(p)
+        if p.ndim == 2 and p.shape[1] >= 2:
+            return float(np.clip(p[0, 1], 0.0, 1.0))
+        return float(np.clip(p.ravel()[0], 0.0, 1.0))
+    except Exception:
+        try:
+            df = clf.decision_function(embeddings)
+            df = np.asarray(df).ravel()
+            score = df[0]
+            return float(1.0 / (1.0 + np.exp(-score)))
+        except Exception:
+            return None
 
-class LightweightHybridWrapper:
-    """
-    Small wrapper that stores XGBoost classifier + label encoder + name of bert model.
-    It lazy-loads SentenceTransformer during transform/predict calls.
-    """
-    def __init__(self, clf, label_encoder=None, bert_name: str = DEFAULT_BERT_NAME):
-        self.clf = clf
-        self.le = label_encoder
-        self.bert_name = bert_name
-        self._bert = None  # will be set on first use (not pickled if you save this object after removing bert)
-
-    def _ensure_bert(self):
-        if self._bert is None:
-            # use cached loader
-            self._bert = get_sentence_transformer(self.bert_name)
-
-    def transform(self, texts):
-        self._ensure_bert()
-        # disable progress bar inside streamlit
-        return self._bert.encode(texts, show_progress_bar=False)
-
-    def predict(self, texts):
-        X = self.transform(texts)
-        preds = self.clf.predict(X)
-        # if label encoder is present, return decoded labels, otherwise raw preds
-        if self.le is not None:
+def decode_label(raw_pred, le):
+    if le is not None:
+        try:
+            return str(le.inverse_transform([raw_pred])[0])
+        except Exception:
             try:
-                return self.le.inverse_transform(preds)
+                return str(le[raw_pred])
             except Exception:
-                return preds
-        return preds
+                pass
+    try:
+        return "REAL" if int(raw_pred) == 1 else "FAKE"
+    except Exception:
+        return str(raw_pred)
 
-    def predict_proba(self, texts):
-        X = self.transform(texts)
-        return self.clf.predict_proba(X)
 
-# ---------------- Discovery & Load ----------------
+# ---------- Load wrapper ----------
+st.title("DetectoNews — BERT + XGBoost (hybrid)")
 cwd = os.getcwd()
-st.sidebar.header("Runtime diagnostics")
-st.sidebar.write("Working dir:")
-st.sidebar.write(cwd)
+st.sidebar.header("Runtime info")
+st.sidebar.write("Working dir:", cwd)
 try:
-    st.sidebar.write(os.listdir(cwd)[:200])
+    st.sidebar.write("Files:", os.listdir(cwd)[:200])
 except Exception:
-    st.sidebar.write("Cannot list working directory")
-
-loaded_wrapper = None
-wrapper_path_used = None
-load_warnings = {}
-
-# try candidate files
-for fname in WRAPPER_FILES:
-    if os.path.exists(os.path.join(cwd, fname)):
-        obj = load_joblib(os.path.join(cwd, fname))
-        if obj is None:
-            continue
-        if isinstance(obj, dict) and "__load_error__" in obj:
-            load_warnings[fname] = obj["__load_error__"]
-            continue
-
-        # if it's already a wrapper-like (has predict method), use as-is
-        if hasattr(obj, "predict") and hasattr(obj, "predict_proba"):
-            loaded_wrapper = obj
-            wrapper_path_used = os.path.join(cwd, fname)
-            break
-
-        # if it's a dict, try to build a lightweight wrapper from it
-        if isinstance(obj, dict):
-            try:
-                loaded_wrapper = make_light_wrapper_from_dict(obj)
-                wrapper_path_used = os.path.join(cwd, fname) + " (dict->wrapper)"
-                break
-            except Exception as e:
-                load_warnings[fname] = f"dict->wrapper conversion failed: {e}"
-                continue
-
-        # if it's a classifier (e.g., xgboost object) then wrap it
-        # Heuristics: xgboost.XGBClassifier or has predict_proba attribute
-        if hasattr(obj, "predict") and hasattr(obj, "predict_proba"):
-            # treat this as clf-only: create small wrapper with default bert name
-            loaded_wrapper = LightweightHybridWrapper(obj, label_encoder=None, bert_name=DEFAULT_BERT_NAME)
-            wrapper_path_used = os.path.join(cwd, fname) + " (clf-only)"
-            break
-
-        # otherwise unknown object: show preview
-        load_warnings[fname] = f"Loaded object type {type(obj)} is not wrapper/ dict/ clf."
-
-# try to find label encoder separately (optional)
-label_enc = None
-if os.path.exists(os.path.join(cwd, LABEL_ENCODER)):
-    le_obj = load_joblib(os.path.join(cwd, LABEL_ENCODER))
-    if isinstance(le_obj, dict) and "__load_error__" in le_obj:
-        load_warnings[LABEL_ENCODER] = le_obj["__load_error__"]
-    else:
-        label_enc = le_obj
-
-# if we converted a wrapper from dict but no label encoder set, try to attach from dict
-if label_enc is None and loaded_wrapper is None:
-    # nothing we can do
     pass
 
-# If loaded_wrapper is a LightweightHybridWrapper but label_enc exists, attach
-if isinstance(loaded_wrapper, LightweightHybridWrapper) and label_enc is not None and loaded_wrapper.le is None:
-    loaded_wrapper.le = label_enc
-
-# If still nothing
-if loaded_wrapper is None:
-    st.title("DetectoNews — BERT+XGBoost")
-    st.error("No usable hybrid wrapper found. Place a lightweight wrapper (or clf/dict) in the working directory with one of these names: " + ", ".join(WRAPPER_FILES))
-    if load_warnings:
-        with st.expander("Load warnings/errors"):
-            st.write(load_warnings)
+loaded = load_wrapper(os.path.join(cwd, WRAPPER_FILENAME))
+if loaded is None:
+    st.error(f"Wrapper file '{WRAPPER_FILENAME}' not found in working directory.")
+    st.stop()
+if isinstance(loaded, dict) and "__load_error__" in loaded:
+    st.error(f"Failed to load wrapper file: {loaded['__load_error__']}")
     st.stop()
 
-# ---------------- UI ----------------
-st.title("DetectoNews — BERT + XGBoost (runtime BERT loader)")
-st.write("Model loaded from: " + str(wrapper_path_used))
-if load_warnings:
-    with st.expander("Load warnings"):
-        st.write(load_warnings)
+clf, label_enc, bert_name = extract_from_wrapper(loaded)
+if clf is None:
+    st.error("Could not find a classifier inside the wrapper. Ensure wrapper dict contains 'model'/'clf' or similar.")
+    st.stop()
 
-st.write("Paste news text/claim below and press Check (first call will load BERT and take longer).")
+st.sidebar.write("Classifier type:", type(clf))
+st.sidebar.write("Label encoder present:", label_enc is not None)
+st.sidebar.write("Transformer to be used:", bert_name)
+
+# ---------- UI ----------
+st.write("Paste a news article/claim below and press **Check**. (First run loads transformer and may take a few seconds.)")
 text = st.text_area("Article / Claim", height=240, placeholder="Paste the news text here...")
 
 if st.button("Check"):
     if not text.strip():
-        st.warning("Enter some text first.")
-        st.stop()
+        st.warning("Please enter some text to analyze.")
+    else:
+        with st.spinner("Embedding text with SentenceTransformer and predicting..."):
+            try:
+                transformer = get_transformer(bert_name)
+            except Exception as e:
+                st.error(f"Failed to load transformer '{bert_name}': {e}")
+                st.stop()
 
-    try:
-        # ensure the wrapper has a bert name; if a plain clf was used we use default bert name
-        if isinstance(loaded_wrapper, LightweightHybridWrapper):
-            # lazy-load happens inside predict
-            pred_obj = loaded_wrapper.predict([text.strip()])
             try:
-                # predict might return array-like
-                pred = list(pred_obj)[0]
-            except Exception:
-                pred = pred_obj
-            # get proba
-            try:
-                proba_raw = loaded_wrapper.predict_proba([text.strip()])
-                proba = float(np.clip(np.asarray(proba_raw)[0, 1], 0.0, 1.0))
-            except Exception:
-                proba = 0.5
+                embeddings = transformer.encode([text.strip()], show_progress_bar=False)
+                embeddings = np.asarray(embeddings)
+            except Exception as e:
+                st.error(f"Failed to create embeddings: {e}")
+                st.stop()
 
-        else:
-            # generic wrapper-like object
-            pred_obj = loaded_wrapper.predict([text.strip()])
             try:
-                pred = list(pred_obj)[0]
-            except Exception:
-                pred = pred_obj
-            proba = 0.5
-            try:
-                pr = loaded_wrapper.predict_proba([text.strip()])
-                proba = float(np.clip(np.asarray(pr)[0, 1], 0.0, 1.0))
-            except Exception:
-                pass
+                raw_pred = clf.predict(embeddings)[0]
+            except Exception as e:
+                st.error(f"Classifier predict failed: {e}")
+                st.stop()
 
-        # decode if label encoder present
-        try:
-            if hasattr(loaded_wrapper, "le") and loaded_wrapper.le is not None:
-                try:
-                    pred_display = loaded_wrapper.le.inverse_transform([pred])[0]
-                except Exception:
-                    pred_display = str(pred)
+            conf = safe_proba_from_clf(clf, embeddings)
+            if conf is None:
+                conf = 0.5
+
+            label = decode_label(raw_pred, label_enc)
+
+            st.markdown("---")
+            st.subheader(f"Prediction: **{label}**")
+            st.metric("Confidence", f"{int(round(conf * 100))} %")
+            st.progress(conf)
+            if str(label).lower().strip() in {"fake", "0", "false"}:
+                st.warning("This content is flagged as likely FAKE. Verify with trusted sources.")
             else:
-                pred_display = "REAL" if int(pred) == 1 else "FAKE"
-        except Exception:
-            pred_display = str(pred)
+                st.success("This content is flagged as likely REAL — still verify high-stakes claims.")
 
-        st.markdown("---")
-        st.subheader(f"Prediction: **{pred_display}**")
-        st.metric("Confidence", f"{int(round(proba * 100))} %")
-        st.progress(proba)
-        if str(pred_display).lower().strip() in {"fake", "0", "false"}:
-            st.warning("This content is flagged as likely FAKE. Verify with trusted sources.")
-        else:
-            st.success("This content is flagged as likely REAL — still verify high-stakes claims.")
-    except Exception as e:
-        st.error(f"Prediction error: {e}")
-
-st.markdown("---")
-with st.expander("More debug info"):
-    st.write("Wrapper object type:", type(loaded_wrapper))
-    st.write("Wrapper path used:", wrapper_path_used)
-    st.write("Label encoder loaded:", label_enc is not None)
+with st.expander("Debug info"):
+    st.write("Loaded wrapper type:", type(loaded))
+    if isinstance(loaded, dict):
+        st.write("Wrapper keys:", list(loaded.keys()))
+    st.write("Classifier type:", type(clf))
+    st.write("Transformer name:", bert_name)
     st.write("Working dir:", cwd)
