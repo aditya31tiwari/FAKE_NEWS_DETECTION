@@ -20,7 +20,7 @@ TFIDF_FILE = "tfidf_vectorizer_new.pkl"
 SVM_FILE = "svm_model_v1.pkl"
 NB_FILE = "naive_bayes_model_v2.pkl"
 BERT_WRAPPER_FILE = "bert_xgb_wrapper.pkl"
-LABEL_ENCODER_FILE = "label_encoder.joblib"  # optional, mainly for debug
+LABEL_ENCODER_FILE = "label_encoder.joblib"  
 
 LABEL_FAKE = 0
 LABEL_REAL = 1
@@ -132,11 +132,11 @@ def predict_bert_xgb(text: str):
 
 
 # ---------- UI ----------
-st.title("DetectoNews🕵️: A Smart System for Automatic Fake News Detection")
+st.title("DetectoNews🕵️")
 st.write("This app uses three models SVM, Naive Bayes and an Hybrid Model, i.e. BERT+XGBoost. "
          "0 = FAKE, 1 = REAL. Final verdict is by majority vote.")
 
-text_input = st.text_area("Enter news article text:", height=260, placeholder="Paste the news article here...")
+text_input = st.text_area("Enter news article text:", height=200, placeholder="Paste the news article here...")
 
 if st.button("Check"):
     if not text_input.strip():
@@ -170,31 +170,39 @@ if st.button("Check"):
                 st.markdown("---")
                 st.subheader(f"Final Verdict: **{final_label}**")
                 if final_label == "FAKE":
-                    st.error("This article is likely FAKE.")
+                    st.error("This article is likely FAKE!!.")
                 else:
-                    st.success("This article is likely REAL.")
+                    st.success("This article is likely REAL!!.")
 
                 st.write(f"Votes (0 = FAKE, 1 = REAL): {dict(counts)}")
 
                 # Details expander
                 with st.expander("Ensemble model details"):
-                    st.markdown("### Individual model outputs")
-                    st.write("**SVM**")
-                    st.write(f"- Predicted label: `{svm_label}` (index {svm_idx})")
+                    st.markdown("### Individual Model Predictions")
+
+                    col1, col2, col3 = st.columns(3)
+
+                    with col1:
+                    st.markdown("**SVM Prediction**")
+                    st.metric(label="", value=f"{svm_label}")
                     if svm_conf is not None:
-                        st.write(f"- Confidence (predicted class): `{svm_conf*100:.2f}%`")
+                        st.success(f"Confidence: {svm_conf:.2f}")
 
-                    st.write("**Naive Bayes**")
-                    st.write(f"- Predicted label: `{nb_label}` (index {nb_idx})")
-                    if nb_conf is not None:
-                        st.write(f"- Confidence (predicted class): `{nb_conf*100:.2f}%`")
+                    with col2:
+                        st.markdown("**Naive Bayes Prediction**")
+                        st.metric(label="", value=f"{nb_label}")
+                        if nb_conf is not None:
+                            st.success(f"Confidence: {nb_conf:.2f}")
 
-                    st.write("**BERT + XGBoost**")
-                    st.write(f"- Predicted label: `{bert_label}` (index {bert_idx})")
-                    if bert_conf is not None:
-                        st.write(f"- Confidence (predicted class): `{bert_conf*100:.2f}%`")
+                    with col3:
+                        st.markdown("**BERT+XGBoost Prediction**")
+                        st.metric(label="", value=f"{bert_label}")
+                        if bert_conf is not None:
+                            st.success(f"Confidence: {bert_conf:.2f}")
+
                     if isinstance(bert_wrapper, dict):
-                        st.write(f"- Transformer used: `{bert_wrapper.get('bert_name', 'unknown')}`")
+                    st.caption(f"Transformer used: `{bert_wrapper.get('bert_name', 'unknown')}`")
+
             else:
                 st.error("No valid predictions available for ensemble. Check that all models loaded correctly.")
 
