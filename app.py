@@ -201,7 +201,7 @@ if st.button("Check"):
                             st.success(f"Confidence: {bert_conf:.2f}")
 
                     if isinstance(bert_wrapper, dict):
-                    st.caption(f"Transformer used: `{bert_wrapper.get('bert_name', 'unknown')}`")
+                        st.caption(f"Transformer used: `{bert_wrapper.get('bert_name', 'unknown')}`")
 
             else:
                 st.error("No valid predictions available for ensemble. Check that all models loaded correctly.")
