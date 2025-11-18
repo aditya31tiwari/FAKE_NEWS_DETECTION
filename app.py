@@ -1,141 +1,206 @@
-# app.py (fixed mapping for label indices)
+# app.py
+# Ensemble Fake News Detection:
+# SVM (TF-IDF) + Naive Bayes (TF-IDF) + BERT + XGBoost
+# 0 = FAKE, 1 = REAL everywhere.
+
 import os
+import re
+from collections import Counter
+
 import joblib
 import numpy as np
 import streamlit as st
 from sentence_transformers import SentenceTransformer
 
-st.set_page_config(page_title="DetectoNews — BERT+XGBoost", page_icon="🧠")
+st.set_page_config(page_title="DetectoNews", page_icon="🕵️", layout="centered")
 
-WRAPPER_FILE = "bert_xgb_wrapper.pkl"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ----------------------
-# Load wrapper
-# ----------------------
+TFIDF_FILE = "tfidf_vectorizer_new.pkl"
+SVM_FILE = "svm_model_v1.pkl"
+NB_FILE = "naive_bayes_model_v2.pkl"
+BERT_WRAPPER_FILE = "bert_xgb_wrapper.pkl"
+LABEL_ENCODER_FILE = "label_encoder.joblib"  # optional, mainly for debug
+
+LABEL_FAKE = 0
+LABEL_REAL = 1
+
+
+# ---------- Helpers ----------
+def clean_text(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"http\S+", " ", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def safe_load(filename):
+    path = os.path.join(BASE_DIR, filename)
+    if not os.path.exists(path):
+        st.error(f"Missing file: {filename}")
+        return None
+    try:
+        return joblib.load(path)
+    except Exception as e:
+        st.error(f"Failed to load {filename}: {e}")
+        return None
+
+
+def idx_to_label(idx: int) -> str:
+    return "FAKE" if idx == LABEL_FAKE else "REAL"
+
+
+def safe_predict_classic(model, X):
+    """
+    For SVM / NB on TF-IDF.
+    Returns (pred_idx, confidence) where pred_idx in {0,1}.
+    Confidence is probability of the predicted class.
+    """
+    if model is None:
+        return None, None
+    try:
+        if hasattr(model, "predict_proba"):
+            proba = model.predict_proba(X)[0]  # [P(fake), P(real)]
+            pred_idx = int(np.argmax(proba))
+            conf = float(proba[pred_idx])
+            return pred_idx, conf
+        # fallback: use decision_function or predict only
+        if hasattr(model, "decision_function"):
+            scores = model.decision_function(X)
+            # sigmoid-ish mapping for binary
+            if np.ndim(scores) == 1:
+                s = float(scores[0])
+                prob_real = 1.0 / (1.0 + np.exp(-s))
+                prob_fake = 1.0 - prob_real
+                proba = np.array([prob_fake, prob_real])
+                pred_idx = int(np.argmax(proba))
+                return pred_idx, float(proba[pred_idx])
+        pred_idx = int(model.predict(X)[0])
+        return pred_idx, 1.0
+    except Exception:
+        return None, None
+
+
+# ---------- Cached loaders ----------
 @st.cache_resource
-def load_wrapper():
-    return joblib.load(WRAPPER_FILE)
+def load_models():
+    tfidf = safe_load(TFIDF_FILE)
+    svm = safe_load(SVM_FILE)
+    nb = safe_load(NB_FILE)
+    bert_wrapper = safe_load(BERT_WRAPPER_FILE)
+    le = safe_load(LABEL_ENCODER_FILE)
+    return tfidf, svm, nb, bert_wrapper, le
 
-wrapper = load_wrapper()
 
-clf = wrapper["clf"]
-label_enc = wrapper["label_encoder"]
-bert_name = wrapper.get("bert_name", "all-mpnet-base-v2")
-
-# get classes from label encoder (could be strings or ints)
-classes = list(label_enc.classes_)     # e.g. ['FAKE','REAL'] or ['0','1'] or [0,1]
-
-def find_index_for_any(classes_list, candidates):
-    """Return first index i where classes_list[i] matches any candidate (with tolerant matching)."""
-    for i, c in enumerate(classes_list):
-        # direct equality
-        if c in candidates:
-            return i
-        # string-insensitive matching
-        try:
-            cs = str(c).strip().lower()
-            for cand in candidates:
-                if str(cand).strip().lower() == cs:
-                    return i
-        except Exception:
-            pass
-    return None
-
-# candidates to match for REAL and FAKE
-real_candidates = ["REAL", "real", "1", 1, "true", "True"]
-fake_candidates = ["FAKE", "fake", "0", 0, "false", "False"]
-
-real_idx = find_index_for_any(classes, real_candidates)
-fake_idx = find_index_for_any(classes, fake_candidates)
-
-# fallback: if nothing matched and exactly two classes, assume index 0 = FAKE, 1 = REAL
-if real_idx is None or fake_idx is None:
-    if len(classes) == 2:
-        # assign deterministically but avoid overwriting any found index
-        if real_idx is None and fake_idx is None:
-            fake_idx, real_idx = 0, 1
-        elif real_idx is None:
-            # fake_idx known -> other is real
-            real_idx = 1 - fake_idx
-        elif fake_idx is None:
-            fake_idx = 1 - real_idx
-
-# final safety: if still None (weird labels), set both to 0 (so app doesn't crash)
-if real_idx is None:
-    real_idx = 1 if len(classes) > 1 else 0
-if fake_idx is None:
-    fake_idx = 0
-
-# Ensure indices are ints and within bounds
-n = len(classes)
-if not (0 <= real_idx < n and 0 <= fake_idx < n):
-    # as last resort, reset to 0/1 if possible
-    fake_idx = 0
-    real_idx = 1 if n > 1 else 0
-
-# ----------------------
-# Load transformer
-# ----------------------
 @st.cache_resource
-def load_transformer(name):
-    return SentenceTransformer(name)
+def load_bert_model(model_name: str):
+    return SentenceTransformer(model_name)
 
-model = load_transformer(bert_name)
 
-# ----------------------
-# UI
-# ----------------------
-st.title("DetectoNews — BERT + XGBoost (Fixed Mapping)")
-text = st.text_area("Enter article text:", height=250)
+tfidf, svm_model, nb_model, bert_wrapper, label_enc = load_models()
+
+
+def predict_bert_xgb(text: str):
+    """
+    Uses wrapper: {"clf": xgb_model, "label_encoder": ..., "bert_name": "..."}
+    Returns (pred_idx, confidence).
+    """
+    if bert_wrapper is None or not isinstance(bert_wrapper, dict):
+        return None, None
+
+    clf = bert_wrapper.get("clf")
+    bert_name = bert_wrapper.get("bert_name", "all-mpnet-base-v2")
+    if clf is None:
+        return None, None
+
+    try:
+        bert_model = load_bert_model(bert_name)
+        emb = bert_model.encode([text.strip()], convert_to_numpy=True)
+        pred_idx = int(clf.predict(emb)[0])
+
+        if hasattr(clf, "predict_proba"):
+            proba = clf.predict_proba(emb)[0]  # [P(fake), P(real)]
+            conf = float(proba[pred_idx])
+        else:
+            conf = 1.0
+
+        return pred_idx, conf
+    except Exception as e:
+        st.error(f"BERT+XGBoost prediction error: {e}")
+        return None, None
+
+
+# ---------- UI ----------
+st.title("DetectoNews🕵️: A Smart System for Automatic Fake News Detection")
+st.write("This app uses three models SVM, Naive Bayes and an Hybrid Model, i.e. BERT+XGBoost. "
+         "0 = FAKE, 1 = REAL. Final verdict is by majority vote.")
+
+text_input = st.text_area("Enter news article text:", height=260, placeholder="Paste the news article here...")
 
 if st.button("Check"):
-    if not text.strip():
+    if not text_input.strip():
         st.warning("Please enter some text.")
     else:
-        with st.spinner("Analyzing..."):
+        raw_text = text_input.strip()
+        cleaned = clean_text(raw_text)
 
-            # Embed input
-            emb = model.encode([text], convert_to_numpy=True)
-
-            # Predict class index
-            pred_idx = clf.predict(emb)[0]
-
-            # Predict probabilities
-            proba = clf.predict_proba(emb)[0]
-
-            # Correctly map probabilities using computed indices
-            prob_fake = float(proba[fake_idx]) if 0 <= fake_idx < len(proba) else float(proba[0])
-            prob_real = float(proba[real_idx]) if 0 <= real_idx < len(proba) else float(proba[-1])
-
-            # Decode final label safely
-            if 0 <= pred_idx < len(classes):
-                predicted_label = classes[pred_idx]
-            else:
-                predicted_label = str(pred_idx)
-
-            # Choose final confidence (probability of predicted class)
-            final_conf = prob_real if str(predicted_label).strip().lower() in ["real","1","true"] else prob_fake
-
-        # ----------------------
-        # Display results
-        # ----------------------
-        st.subheader(f"Prediction: **{predicted_label}**")
-        st.metric("Confidence", f"{final_conf * 100:.1f}%")
-        try:
-            st.progress(final_conf)
-        except Exception:
-            pass
-
-        # Interpret predicted_label textually (try to be robust)
-        pred_low = str(predicted_label).strip().lower()
-        if pred_low in ["fake", "0", "false"]:
-            st.warning("This article is likely FAKE. Verify with reliable sources.")
+        if tfidf is None:
+            st.error("TF-IDF vectorizer not loaded.")
         else:
-            st.success("This article seems REAL — but always double-check for accuracy.")
+            X_tfidf = tfidf.transform([cleaned])
 
-# Debug info
-with st.expander("Debug Info"):
-    st.write("Transformer name:", bert_name)
-    st.write("Label encoder classes (raw):", classes)
-    st.write("Interpreted fake_idx:", fake_idx, "real_idx:", real_idx)
-    st.write("Predicted class indices must map to these class names.")
+            # Individual model predictions
+            svm_idx, svm_conf = safe_predict_classic(svm_model, X_tfidf)
+            nb_idx, nb_conf = safe_predict_classic(nb_model, X_tfidf)
+            bert_idx, bert_conf = predict_bert_xgb(raw_text)
+
+            svm_label = idx_to_label(svm_idx) if svm_idx in (0, 1) else "ERROR"
+            nb_label = idx_to_label(nb_idx) if nb_idx in (0, 1) else "ERROR"
+            bert_label = idx_to_label(bert_idx) if bert_idx in (0, 1) else "ERROR"
+
+            # Ensemble voting
+            votes = [i for i in (svm_idx, nb_idx, bert_idx) if i in (0, 1)]
+            if votes:
+                counts = Counter(votes)  # e.g. {0:2, 1:1}
+                final_idx, _ = counts.most_common(1)[0]
+                final_label = idx_to_label(final_idx)
+
+                # Main result
+                st.markdown("---")
+                st.subheader(f"Final Verdict: **{final_label}**")
+                if final_label == "FAKE":
+                    st.error("This article is likely FAKE.")
+                else:
+                    st.success("This article is likely REAL.")
+
+                st.write(f"Votes (0 = FAKE, 1 = REAL): {dict(counts)}")
+
+                # Details expander
+                with st.expander("Ensemble model details"):
+                    st.markdown("### Individual model outputs")
+                    st.write("**SVM**")
+                    st.write(f"- Predicted label: `{svm_label}` (index {svm_idx})")
+                    if svm_conf is not None:
+                        st.write(f"- Confidence (predicted class): `{svm_conf*100:.2f}%`")
+
+                    st.write("**Naive Bayes**")
+                    st.write(f"- Predicted label: `{nb_label}` (index {nb_idx})")
+                    if nb_conf is not None:
+                        st.write(f"- Confidence (predicted class): `{nb_conf*100:.2f}%`")
+
+                    st.write("**BERT + XGBoost**")
+                    st.write(f"- Predicted label: `{bert_label}` (index {bert_idx})")
+                    if bert_conf is not None:
+                        st.write(f"- Confidence (predicted class): `{bert_conf*100:.2f}%`")
+                    if isinstance(bert_wrapper, dict):
+                        st.write(f"- Transformer used: `{bert_wrapper.get('bert_name', 'unknown')}`")
+            else:
+                st.error("No valid predictions available for ensemble. Check that all models loaded correctly.")
+
+# Debug info at bottom
+with st.expander("Debug info"):
+    st.write("Working dir:", BASE_DIR)
+    st.write("Files:", os.listdir(BASE_DIR))
+    if label_enc is not None:
+        st.write("Label encoder classes:", getattr(label_enc, "classes_", None))
