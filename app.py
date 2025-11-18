@@ -183,10 +183,10 @@ if st.button("Check"):
                     col1, col2, col3 = st.columns(3)
 
                     with col1:
-                    st.markdown("**SVM Prediction**")
-                    st.metric(label="", value=f"{svm_label}")
-                    if svm_conf is not None:
-                        st.success(f"Confidence: {svm_conf:.2f}")
+                        st.markdown("**SVM Prediction**")
+                        st.metric(label="", value=f"{svm_label}")
+                        if svm_conf is not None:
+                            st.success(f"Confidence: {svm_conf:.2f}")
 
                     with col2:
                         st.markdown("**Naive Bayes Prediction**")
@@ -206,9 +206,4 @@ if st.button("Check"):
             else:
                 st.error("No valid predictions available for ensemble. Check that all models loaded correctly.")
 
-# Debug info at bottom
-with st.expander("Debug info"):
-    st.write("Working dir:", BASE_DIR)
-    st.write("Files:", os.listdir(BASE_DIR))
-    if label_enc is not None:
-        st.write("Label encoder classes:", getattr(label_enc, "classes_", None))
+
